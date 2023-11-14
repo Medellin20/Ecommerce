@@ -1,0 +1,247 @@
+---
+- name: Déploiement d'une Application Symfony
+  hosts: web_servers
+  vars:
+    symfony_dir: /var/www/app
+    symfony_path: "{{ symfony_dir }}/bin/console"
+    db_name: app_ecommerce
+    db_user: mysql
+    db_pass: Ced2003
+  become: true
+ # pre_tasks:
+  #  - name: OS checkin
+   #   block:
+    #    - name: Distribution et version de l'OS
+     #     ansible.builtin.setup:
+      #      gather_subset: all
+       # - name: Arrêter si l'OS n'est pas Débian 11 Bullseyes
+        #  meta: end_play
+         # when: ansible_distribution != 'Debian' or ansible_distribution_version != '11 (bullseye)'
+
+  tasks:
+    - name: Update apt cache
+      become: true
+      apt:
+        update_cache: yes
+      
+    - name: Upgrade installed packages
+      become: true
+      apt:
+        upgrade: dist
+      
+
+    - name: Install required packages
+      become: true
+      apt:
+        name:
+          - lsb-release
+          - ca-certificates
+          - apt-transport-https
+          - software-properties-common
+          - gnupg2
+        state: present
+
+    - name: Add sury.org repository for PHP packages
+      apt_key:
+        url: https://packages.sury.org/php/apt.gpg
+        state: present
+
+    - name: Add sury.org repository for PHP packages
+      apt_repository:
+        repo: deb https://packages.sury.org/php/ {{ ansible_lsb.codename }} main
+        state: present
+        filename: sury-php.list
+        update_cache: true
+
+    - name: Install MariaDB server
+      become: true
+      apt:
+        name: mariadb-server
+        state: present
+
+    - name: Create database
+      community.mysql.mysql_db:
+        name: "{{ db_name }}"
+        state: present
+
+    - name: Create user and password
+      community.mysql.mysql_user:
+        name: mysql
+        password: Ced2003
+        login_user: root
+        login_password: 
+        host: localhost
+        priv: "{{ db_name }}.*:ALL"
+        state: present
+    
+    - name: Update apt cache
+      become: true
+      apt:
+        update_cache: yes
+
+
+    - name: Install Apache2 and PHP 8.1 
+      apt:
+        name:
+          - libapache2-mod-php8.1
+          - php8.1
+          - php8.1-cli
+          - php8.1-fpm
+          - php8.1-mbstring
+          - php8.1-xml
+          - php8.1-zip
+          - php8.1-curl
+          - php8.1-gd
+          - php8.1-common
+          - php8.1-intl
+          - php-json
+          - php8.1-mysql
+          - php8.1-redis
+          - php8.1-imagick
+          
+        state: present
+
+    - name: Download Composer
+      ansible.builtin.get_url:
+       url: https://getcomposer.org/installer
+       dest: /tmp/composer-setup.php
+
+        
+    - name: Install Composer
+      ansible.builtin.command:
+       _raw_params: "php /tmp/composer-setup.php --install-dir=/usr/bin --filename=composer"
+       chdir: /usr/bin
+       creates: /usr/bin/composer
+
+
+    - name: Move Composer
+      ansible.builtin.command:
+       cmd: mv /tmp/composer.phar /usr/bin/composer
+       creates: /usr/bin/composer
+
+
+    - name: Make Composer Executable
+      ansible.builtin.file:
+       path: /usr/bin/composer
+       mode: 'a+x'
+       owner: oswin
+       group: oswin
+      become: true
+     
+     
+        
+        #Task install symfony and run the application and add ansible vault pour les secrets
+    - name: Create project directory and set its permissions for API
+      become: true
+      file:
+        path: "/var/www/app"
+        state: directory
+        recurse: yes
+        owner: www-data
+        group: www-data 
+        mode: "0755"
+
+    - name: Copy API files
+      copy:
+        src: /home/oswin/T-WEB-600-COT-6-1-ecommerce-regis.detchenou/app
+        dest: /var/www
+      
+
+    - name: Set permissions on /var/www/app
+      become: true
+      become_user: root
+      file:
+       path: /var/www/app
+       owner: oswin
+       group: oswin
+       mode: '0777'
+       recurse: yes
+       
+    - name: run composer update
+      become: true
+      become_user: oswin
+      ansible.builtin.command:
+       cmd:  composer update
+       chdir: /var/www/app
+       
+    - name: Install API dependencies
+      become: true
+      become_user: oswin
+      ansible.builtin.command:
+        cmd: composer install
+        chdir: /var/www/app
+
+    - name: Install apache2
+      apt:
+        name: apache2
+        state: present
+
+    - name: Configure Apache2
+      copy:
+        src: /etc/apache2/apache2.conf
+        dest: /etc/apache2/apache2.conf
+        owner: oswin
+        group: oswin
+        mode: 0644
+      notify: Restart apache2
+
+    - name: Set timezone
+      timezone: 
+        name: "Porto-Novo/Paris"
+
+    - name: Enable Apache2 site
+      service:
+        name: apache2
+        enabled: yes
+        state: started
+      
+    # Symfony commands  
+    
+    - name: Clear cache
+      shell: 
+        cmd: symfony console cache:clear --env=prod"
+        chdir: " {{ symfony_dir }}"
+      become_user: www-data
+
+    - name: Make migrations
+      shell:
+        cmd: symfony console make:migration"
+        chdir: " {{ symfony_dir }} "
+      become_user: oswin
+
+    - name: Execute migrations
+      shell:
+        cmd: symfony console doctrine:migrations:migrate --no-interaction"
+        chdir: " {{ symfony_dir }} "
+      become_user: oswin
+
+      - name: Update database schema if needed 
+      shell:
+        cmd: symfony console doctrine:schema:update --force --no-interaction"
+        chdir: " {{ symfony_dir }} "
+      become_user: oswin
+
+    - name: Run symfony server
+      become: yes
+      shell:
+        cmd: symfony server:start localhost:8000
+        chdir: " {{ symfony_dir }} "
+      become_user: oswin
+
+  handlers:
+    - name: Reload php-fpm
+      systemd:
+        name: php8.1-fpm
+        state: reloaded
+      notify: Restart apache2
+
+    - name: Start Apache2
+      service:
+        name: apache2
+        state: started
+        enabled: yes
+
+    - name: Restart apache2
+      systemd:
+        name: apache2
+        state: restarted
